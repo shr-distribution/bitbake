@@ -75,6 +75,8 @@ class ConfigParameters(object):
         if self.options.show_environment:
             if 'world' in self.options.pkgs_to_build:
                 action['msg'] = "'world' is not a valid target for --environment."
+            if 'world-image' in self.options.pkgs_to_build:
+                action['msg'] = "'world-image' is not a valid target for --environment."
             elif 'universe' in self.options.pkgs_to_build:
                 action['msg'] = "'universe' is not a valid target for --environment."
             elif len(self.options.pkgs_to_build) > 1:

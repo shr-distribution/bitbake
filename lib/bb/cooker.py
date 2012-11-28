@@ -911,6 +911,32 @@ class BBCooker:
             if terminal:
                 self.recipecache.world_target.add(pn)
 
+    def buildWorldImageTargetList(self):
+        """
+         Build package list for "bitbake world-image"
+        """
+        all_depends = self.status.all_depends
+        pn_provides = self.status.pn_provides
+        parselog.debug(1, "collating packages for \"world-image\"")
+        for f in self.status.possible_world_image:
+            terminal = True
+            pn = self.status.pkg_fn[f]
+
+            for p in pn_provides[pn]:
+                if p.startswith('virtual/'):
+                    parselog.debug(2, "World image build skipping %s due to %s provider starting with virtual/", f, p)
+                    terminal = False
+                    break
+                for pf in self.status.providers[p]:
+                    if self.status.pkg_fn[pf] != pn:
+                        parselog.debug(2, "World image build skipping %s due to both us and %s providing %s", f, pf, p)
+                        terminal = False
+                        break
+            if terminal:
+                self.status.world_image_target.add(pn)
+        parselog.debug(2, "collated packages for \"world-image\": '%s'" % self.status.possible_world_image_packages)
+        return self.status.possible_world_image_packages
+
     def interactiveMode( self ):
         """Drop off into a shell"""
         try:
@@ -1332,6 +1358,12 @@ class BBCooker:
             self.buildWorldTargetList()
             pkgs_to_build.remove('world')
             for t in self.recipecache.world_target:
+                pkgs_to_build.append(t)
+
+        if 'world-image' in pkgs_to_build:
+            packages = ' '.join(self.buildWorldImageTargetList())
+            self.configuration.data.setVar('IMAGE_INSTALL_pn-world-image', packages)
+            for t in self.status.world_image_target:
                 pkgs_to_build.append(t)
 
         if 'universe' in pkgs_to_build:
