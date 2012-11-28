@@ -43,7 +43,7 @@ except ImportError:
     logger.info("Importing cPickle failed. "
                 "Falling back to a very slow implementation.")
 
-__cache_version__ = "147"
+__cache_version__ = "148"
 
 def getCacheFile(path, filename, data_hash):
     return os.path.join(path, filename + "." + data_hash)
@@ -127,6 +127,8 @@ class CoreRecipeInfo(RecipeInfoCommon):
         self.pr = self.getvar('PR', metadata)
         self.defaultpref = self.intvar('DEFAULT_PREFERENCE', metadata)
         self.not_world = self.getvar('EXCLUDE_FROM_WORLD', metadata)
+        self.not_world_image = self.getvar('EXCLUDE_FROM_WORLD_IMAGE', metadata)
+        self.not_world_image_packages = self.getvar('EXCLUDE_PACKAGES_FROM_WORLD_IMAGE', metadata).split(' ')
         self.stamp = self.getvar('STAMP', metadata)
         self.stampclean = self.getvar('STAMPCLEAN', metadata)        
         self.stamp_base = self.flaglist('stamp-base', self.tasks, metadata)
@@ -175,6 +177,8 @@ class CoreRecipeInfo(RecipeInfoCommon):
         cachedata.rundeps = defaultdict(lambda: defaultdict(list))
         cachedata.runrecs = defaultdict(lambda: defaultdict(list))
         cachedata.possible_world = []
+        cachedata.possible_world_image = []
+        cachedata.possible_world_image_packages = []
         cachedata.universe_target = []
         cachedata.hashfn = {}
 
@@ -234,6 +238,16 @@ class CoreRecipeInfo(RecipeInfoCommon):
         # calculations
         if not self.not_world:
             cachedata.possible_world.append(fn)
+            # Collect files we may need for possible world-image
+            # calculations anc packages which are not explicitly excluded
+            if not self.not_world_image:
+                cachedata.possible_world_image.append(fn)
+                if self.not_world_image_packages:
+                    for package in self.packages:
+                        if not package in self.not_world_image_packages:
+                            cachedata.possible_world_image_packages.append(package)
+                else:
+                    cachedata.possible_world_image_packages.extend(self.packages)
 
         # create a collection of all targets for sanity checking
         # tasks, such as upstream versions, license, and tools for
@@ -718,6 +732,7 @@ class CacheData(object):
         # Indirect Cache variables (set elsewhere)
         self.ignored_dependencies = []
         self.world_target = set()
+        self.world_image_target = set()
         self.bbfile_priority = {}
 
     def add_from_recipeinfo(self, fn, info_array):
