@@ -129,6 +129,7 @@ class CoreRecipeInfo(RecipeInfoCommon):
         self.defaultpref = self.intvar('DEFAULT_PREFERENCE', metadata)
         self.broken = self.getvar('BROKEN', metadata)
         self.not_world = self.getvar('EXCLUDE_FROM_WORLD', metadata)
+        self.not_world_image = self.getvar('EXCLUDE_FROM_WORLD_IMAGE', metadata)
         self.stamp = self.getvar('STAMP', metadata)
         self.stampclean = self.getvar('STAMPCLEAN', metadata)        
         self.stamp_base = self.flaglist('stamp-base', self.tasks, metadata)
@@ -177,6 +178,7 @@ class CoreRecipeInfo(RecipeInfoCommon):
         cachedata.rundeps = defaultdict(lambda: defaultdict(list))
         cachedata.runrecs = defaultdict(lambda: defaultdict(list))
         cachedata.possible_world = []
+        cachedata.possible_world_image = []
         cachedata.universe_target = []
         cachedata.hashfn = {}
 
@@ -236,6 +238,12 @@ class CoreRecipeInfo(RecipeInfoCommon):
         # calculations
         if not self.broken and not self.not_world:
             cachedata.possible_world.append(fn)
+            #cachedata.possible_world_image.append(fn)
+            # Collect files we may need for possible world-image
+            # calculations
+            if not self.not_world_image:
+                cachedata.possible_world_image.append(fn)
+
 
         # create a collection of all targets for sanity checking
         # tasks, such as upstream versions, license, and tools for
@@ -711,6 +719,7 @@ class CacheData(object):
         # Indirect Cache variables (set elsewhere)
         self.ignored_dependencies = []
         self.world_target = set()
+        self.world_image_target = set()
         self.bbfile_priority = {}
 
     def add_from_recipeinfo(self, fn, info_array):

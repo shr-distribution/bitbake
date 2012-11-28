@@ -227,6 +227,8 @@ class BBCooker:
         if self.configuration.show_environment:
             if 'world' in self.configuration.pkgs_to_build:
                 self.commandlineAction['msg'] = "'world' is not a valid target for --environment."
+            if 'world-image' in self.configuration.pkgs_to_build:
+                self.commandlineAction['msg'] = "'world-image' is not a valid target for --environment."
             elif 'universe' in self.configuration.pkgs_to_build:
                 self.commandlineAction['msg'] = "'universe' is not a valid target for --environment."
             elif len(self.configuration.pkgs_to_build) > 1:
@@ -817,6 +819,33 @@ class BBCooker:
             if terminal:
                 self.status.world_target.add(pn)
 
+    def buildWorldImageTargetList(self):
+        """
+         Build package list for "bitbake world-image"
+        """
+        all_depends = self.status.all_depends
+        pn_provides = self.status.pn_provides
+        parselog.debug(1, "collating packages for \"world-image\"")
+        for f in self.status.possible_world_image:
+            terminal = True
+            pn = self.status.pkg_fn[f]
+
+            for p in pn_provides[pn]:
+                if p.startswith('virtual/'):
+                    parselog.debug(2, "World image build skipping %s due to %s provider starting with virtual/", f, p)
+                    terminal = False
+                    break
+                for pf in self.status.providers[p]:
+                    if self.status.pkg_fn[pf] != pn:
+                        parselog.debug(2, "World image build skipping %s due to both us and %s providing %s", f, pf, p)
+                        terminal = False
+                        break
+            if terminal:
+                self.status.world_image_target.add(pn)
+        bb.warn("all packages '%s'" % ' '.join(self.status.world_image_target))
+        self.configuration.data.setVar('WORLD_IMAGE_TARGETS', ' '.join(self.status.world_image_target))
+        self.configuration.data.setVar('IMAGE_INSTALL_pn-world-image', ' '.join(self.status.world_image_target))
+
     def interactiveMode( self ):
         """Drop off into a shell"""
         try:
@@ -1252,6 +1281,12 @@ class BBCooker:
             pkgs_to_build.remove('world')
             for t in self.status.world_target:
                 pkgs_to_build.append(t)
+
+        if 'world-image' in pkgs_to_build:
+            self.buildWorldImageTargetList()
+            #pkgs_to_build.remove('world-image')
+            #for t in self.status.world_image_target:
+            #    pkgs_to_build.append(t)
 
         if 'universe' in pkgs_to_build:
             parselog.warn("The \"universe\" target is only intended for testing and may produce errors.")
