@@ -179,6 +179,7 @@ class CoreRecipeInfo(RecipeInfoCommon):
         cachedata.runrecs = defaultdict(lambda: defaultdict(list))
         cachedata.possible_world = []
         cachedata.possible_world_image = []
+        cachedata.possible_world_image_packages = []
         cachedata.universe_target = []
         cachedata.hashfn = {}
 
@@ -243,6 +244,7 @@ class CoreRecipeInfo(RecipeInfoCommon):
             # calculations
             if not self.not_world_image:
                 cachedata.possible_world_image.append(fn)
+                cachedata.possible_world_image_packages.extend(self.packages)
 
 
         # create a collection of all targets for sanity checking

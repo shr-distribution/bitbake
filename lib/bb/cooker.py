@@ -842,9 +842,10 @@ class BBCooker:
                         break
             if terminal:
                 self.status.world_image_target.add(pn)
-        bb.warn("all packages '%s'" % ' '.join(self.status.world_image_target))
-        self.configuration.data.setVar('WORLD_IMAGE_TARGETS', ' '.join(self.status.world_image_target))
-        self.configuration.data.setVar('IMAGE_INSTALL_pn-world-image', ' '.join(self.status.world_image_target))
+        bb.warn("all recipes '%s'" % ' '.join(self.status.world_image_target))
+        bb.warn("all packages '%s'" % ' '.join(self.status.possible_world_image_packages))
+        self.configuration.data.setVar('IMAGE_INSTALL_pn-world-image', ' '.join(self.status.possible_world_image_packages))
+        return self.status.possible_world_image_packages
 
     def interactiveMode( self ):
         """Drop off into a shell"""
@@ -1283,10 +1284,13 @@ class BBCooker:
                 pkgs_to_build.append(t)
 
         if 'world-image' in pkgs_to_build:
-            self.buildWorldImageTargetList()
+            packages = ' '.join(self.buildWorldImageTargetList())
+            bb.warn('Packages %s' % packages)
+            self.configuration.data.setVar('IMAGE_INSTALL_pn-world-image', packages)
+            for t in self.status.world_image_target:
+                pkgs_to_build.append(t)
+            #d.setVar('WORLD_IMAGE_PACKAGES', packages)
             #pkgs_to_build.remove('world-image')
-            #for t in self.status.world_image_target:
-            #    pkgs_to_build.append(t)
 
         if 'universe' in pkgs_to_build:
             parselog.warn("The \"universe\" target is only intended for testing and may produce errors.")
