@@ -1659,9 +1659,10 @@ class Fetch(object):
 
         return local
 
-    def download(self, urls=None):
+    def download(self, urls=None, only_warn=False):
         """
-        Fetch all urls
+        Fetch all urls. In case only_warn is True, a failure to fetch a url
+        will only result in a warning message, rather than an error message.
         """
         if not urls:
             urls = self.urls
@@ -1739,19 +1740,28 @@ class Fetch(object):
 
                 if not done or not m.done(ud, self.d):
                     if firsterr:
-                        logger.error(str(firsterr))
+                        if only_warn:
+                            logger.warning(str(firsterr))
+                        else:
+                            logger.error(str(firsterr))
                     raise FetchError("Unable to fetch URL from any source.", u)
 
                 m.update_donestamp(ud, self.d)
 
             except IOError as e:
                 if e.errno in [errno.ESTALE]:
-                    logger.error("Stale Error Observed %s." % u)
+                    if only_warn:
+                        logger.warning("Stale Error Observed %s." % u)
+                    else:
+                        logger.error("Stale Error Observed %s." % u)
                     raise ChecksumError("Stale Error Detected")
 
             except BBFetchException as e:
                 if isinstance(e, ChecksumError):
-                    logger.error("Checksum failure fetching %s" % u)
+                    if only_warn:
+                        logger.warning("Checksum failure fetching %s" % u)
+                    else:
+                        logger.error("Checksum failure fetching %s" % u)
                 raise
 
             finally:
