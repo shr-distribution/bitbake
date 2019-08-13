@@ -2241,10 +2241,11 @@ class RunQueueExecute:
             if not valid:
                 continue
 
+            if tid in self.tasks_scenequeue_done:
+                self.tasks_scenequeue_done.remove(tid)
             for dep in self.sqdata.sq_covered_tasks[tid]:
                 if dep not in self.runq_complete:
                     if dep in self.tasks_scenequeue_done and dep not in self.sqdata.unskippable:
-                        logger.debug(1, "Removing to done %s" % dep)
                         self.tasks_scenequeue_done.remove(dep)
 
             if tid in self.sq_buildable:
@@ -2254,8 +2255,6 @@ class RunQueueExecute:
             if self.sqdata.sq_revdeps[tid].issubset(self.scenequeue_covered | self.scenequeue_notcovered):
                 if tid not in self.sq_buildable:
                     self.sq_buildable.add(tid)
-            elif tid in self.sq_buildable:
-                self.sq_buildable.remove(tid)
 
             if tid in self.sqdata.outrightfail:
                 self.sqdata.outrightfail.remove(tid)
