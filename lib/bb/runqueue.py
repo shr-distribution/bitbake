@@ -2310,11 +2310,10 @@ class RunQueueExecute:
         covered.difference_update(notcovered)
         covered.intersection_update(self.tasks_scenequeue_done)
 
-        for tid in notcovered:
+        for tid in notcovered | covered:
             if len(self.rqdata.runtaskentries[tid].depends) == 0:
                 self.setbuildable(tid)
-        for tid in covered:
-             if self.rqdata.runtaskentries[tid].depends.issubset(self.runq_complete):
+            elif self.rqdata.runtaskentries[tid].depends.issubset(self.runq_complete):
                  self.setbuildable(tid)
 
         self.tasks_covered = covered
