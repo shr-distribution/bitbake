@@ -2254,6 +2254,8 @@ class RunQueueExecute:
             if self.sqdata.sq_revdeps[tid].issubset(self.scenequeue_covered | self.scenequeue_notcovered):
                 if tid not in self.sq_buildable:
                     self.sq_buildable.add(tid)
+            elif tid in self.sq_buildable:
+                self.sq_buildable.remove(tid)
 
             if tid in self.sqdata.outrightfail:
                 self.sqdata.outrightfail.remove(tid)
