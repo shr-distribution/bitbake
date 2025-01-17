@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+
+#
+# SPDX-License-Identifier: GPL-2.0-only
+#
+
+import logging
+import os
+import sys
+import argparse
+import warnings
+import json
+import shutil
+import time
+import stat
+import tempfile
+import configparser
+import datetime
+
+bindir = os.path.abspath(os.path.dirname(__file__))
+topdir = os.path.dirname(bindir)
+sys.path[0:0] = [os.path.join(topdir, 'lib')]
+
+import bb.msg
+import bb.process
+
+logger = bb.msg.logger_create('bitbake-setup', sys.stdout)
+
+def init_bb_cache(args):
+    dldir = os.path.join(args.cache_dir, 'downloads')
+    bb_cachedir = os.path.join(args.cache_dir, 'cache')
+
+    d = bb.data.init()
+    d.setVar("DL_DIR", dldir)
+    d.setVar("BB_CACHEDIR", bb_cachedir)
+    d.setVar("__BBSRCREV_SEEN", "1")
+    if args.no_network:
+        d.setVar("BB_SRCREV_POLICY", "cache")
+    bb.fetch.fetcher_init(d)
+    return d
+
+def get_config_name(config):
+    return os.path.basename(config).split('.')[0]
+
+def copy_and_commit_config(config_path, dest_config_dir):
+    shutil.copy(config_path, dest_config_dir)
+
+    bb.process.run("git -C {} add .".format(dest_config_dir))
+    bb.process.run("git -C {} commit -a -m 'Configuration at {}'".format(dest_config_dir, time.asctime()))
+
+def _write_layer_list(dest, repodirs):
+    layers = []
+    for r in repodirs:
+        for root, dirs, files in os.walk(os.path.join(dest,r)):
+            if os.path.basename(root) == 'conf' and 'layer.conf' in files:
+                layers.append(os.path.relpath(os.path.dirname(root), dest))
+    layers_f = os.path.join(dest, ".oe-layers.json")
+    with open(layers_f, 'w') as f:
+        json.dump({"version":"1.0","layers":layers}, f, sort_keys=True, indent=4)
+
+def checkout_layers(layers, layerdir, d):
+    repodirs = []
+    oesetupbuild = None
+    for r_name in layers:
+        r_data = layers[r_name]
+        repodir = r_data["path"]
+        repodirs.append(repodir)
+
+        r_remote = r_data['git-remote']
+        rev = r_remote['rev']
+        remotes = r_remote['remotes']
+
+        for remote in remotes:
+            type,host,path,user,pswd,params = bb.fetch.decodeurl(remotes[remote]["uri"])
+            fetchuri = bb.fetch.encodeurl(('git',host,path,user,pswd,params))
+            print("Fetching layer/tool repository {} into {}".format(r_name, os.path.join(layerdir,repodir)))
+            fetcher = bb.fetch.Fetch(["{};protocol={};rev={};nobranch=1;destsuffix={}".format(fetchuri,type,rev,repodir)], d)
+            do_fetch(fetcher, layerdir)
+
+        if os.path.exists(os.path.join(layerdir, repodir, 'scripts/oe-setup-build')):
+            oesetupbuild = os.path.join(layerdir, repodir, 'scripts/oe-setup-build')
+
+    _write_layer_list(layerdir, repodirs)
+
+    if oesetupbuild:
+        oesetupbuild_symlink = os.path.join(layerdir, 'setup-build')
+        if os.path.exists(oesetupbuild_symlink):
+            os.remove(oesetupbuild_symlink)
+        os.symlink(os.path.relpath(oesetupbuild,layerdir),oesetupbuild_symlink)
+
+def setup_build(name, config, layerdir, topbuilddir):
+    builddir = os.path.join(topbuilddir, "build-{}".format(name))
+    print("==============================")
+    print("Setting up configuration {} in {}".format(name, builddir))
+
+    template = config.get("oe-template")
+    if not template:
+        print("Configuration does not contain a reference to an OpenEmbedded build template via 'oe-template'; please use oe-setup-build, oe-init-build-env or another mechanism manually to complete the setup.")
+        return
+    oesetupbuild = os.path.join(layerdir, 'setup-build')
+    if not os.path.exists(oesetupbuild):
+        raise Exception("Cannot complete setting up a build directory from OpenEmbedded template '{}' as oe-setup-build was not found in any layers; please use oe-init-build-env manually.".format(template))
+
+    confdir = os.path.join(builddir, 'conf')
+    backup_confdir = confdir + "-backup.{}".format(time.strftime("%Y%m%d%H%M%S"))
+    if os.path.exists(confdir):
+        os.rename(confdir, backup_confdir)
+    bb.process.run("{} setup -c {} -b {} --no-shell".format(oesetupbuild, template, builddir))
+
+    build_script = os.path.join(builddir, "build-targets")
+    init_script = os.path.join(builddir, "init-build-env")
+    targets = " && ".join(config["targets"])
+    shell = os.path.basename(os.environ.get("SHELL","bash"))
+    with open(build_script,'w') as f:
+        f.write("#!/usr/bin/env {}\n. {} && {}\n".format(shell, init_script, targets))
+    st = os.stat(build_script)
+    os.chmod(build_script, st.st_mode | stat.S_IEXEC)
+
+    fragments = config.get("oe-fragments")
+    if fragments:
+        for f in fragments:
+            bb.process.run("{} -c '. {} && bitbake-config-build enable-fragment {}'".format(shell, init_script, f))
+
+    if os.path.exists(backup_confdir):
+        config_diff = get_diff(backup_confdir, confdir)
+        if config_diff:
+            print("Existing bitbake configuration directory renamed to {}".format(backup_confdir))
+            print("The bitbake configuration has changed:")
+            print(config_diff)
+        else:
+            shutil.rmtree(backup_confdir)
+
+    with open(os.path.join(builddir,'conf/conf-summary.txt')) as f:
+        print("Configuration summary:\n{}\nAdditional information is in {}\n".format(f.read(), os.path.join(builddir,'conf/conf-notes.txt')))
+    print("Run {} to execute the default build targets for this configuration.".format(build_script))
+    print("Source the environment using '. {}' to run builds from the command line.".format(init_script))
+    print("The bitbake build configuration (local.conf, bblayers.conf and more) can be found in {}/conf".format(builddir))
+
+def get_registry_config(registry_path, id, dest_dir):
+    for root, dirs, files in os.walk(registry_path):
+        for f in files:
+            if f.endswith('.conf.json') and id == get_config_name(f):
+                shutil.copy(os.path.join(root, f), dest_dir)
+                return f
+    raise Exception("Unable to find {} in available configurations; use 'list' sub-command to see what is available".format(id))
+
+def obtain_config(upstream_config, dest_dir, args, d):
+    if upstream_config["type"] == 'local':
+        shutil.copy(upstream_config['path'], dest_dir)
+        basename = os.path.basename(upstream_config['path'])
+    elif upstream_config["type"] == 'network':
+        bb.process.run("wget {}".format(upstream_config["uri"]), cwd=dest_dir)
+        basename = os.path.basename(upstream_config['uri'])
+    elif upstream_config["type"] == 'registry':
+        registry_path = update_registry(upstream_config["registry"], args.cache_dir, d)
+        basename = get_registry_config(registry_path, upstream_config["id"], dest_dir)
+    else:
+        raise Exception("Unknown configuration type: {}".format(upstream_config["type"]))
+    return os.path.join(dest_dir, basename)
+
+def update_build_config(config_path, confdir, topbuilddir, layerdir, d, update_layers_only=False):
+    build_configs = json.load(open(config_path))["configuration"]["bitbake-setup"]
+    layer_config = json.load(open(config_path))["sources"]
+    if not update_layers_only:
+        copy_and_commit_config(config_path, confdir)
+    checkout_layers(layer_config, layerdir, d)
+    for build_name, build_config in build_configs.items():
+        setup_build(build_name, build_config, layerdir, topbuilddir)
+
+def init_config(args, d):
+    stdout = sys.stdout
+    def handle_task_progress(event, d):
+        rate = event.rate if event.rate else ''
+        progress = event.progress if event.progress > 0 else 0
+        print("{}% {}                ".format(progress, rate), file=stdout, end='\r')
+
+    config_name = get_config_name(args.config)
+    topbuilddir = os.path.join(os.path.abspath(args.build_dir_prefix), config_name)
+    if os.path.exists(topbuilddir):
+        print("Build already initialized in {}\nUse 'bitbake-setup status' to check if it needs to be updated or 'bitbake-setup update' to perform the update.".format(topbuilddir))
+        return
+
+    print("Initializing a {} build in {}".format(config_name, topbuilddir))
+
+    if os.path.exists(args.config):
+        upstream_config = {'type':'local','path':os.path.abspath(args.config)}
+    elif args.config.startswith("http://") or args.config.startswith("https://"):
+        upstream_config = {'type':'network','uri':args.config}
+    else:
+        upstream_config = {'type':'registry','registry':args.registry,'id':args.config}
+
+    os.makedirs(topbuilddir)
+
+    with open(os.path.join(topbuilddir, "config-upstream.json"),'w') as s:
+        json.dump(upstream_config, s, sort_keys=True, indent=4)
+
+    confdir = os.path.join(topbuilddir, "config")
+    layerdir = os.path.join(topbuilddir, "layers")
+
+    os.makedirs(confdir)
+    os.makedirs(layerdir)
+
+    bb.process.run("git -C {} init -b main".format(confdir))
+    bb.process.run("git -C {} commit --allow-empty -m 'Initial commit'".format(confdir))
+
+    bb.event.register("bb.build.TaskProgress", handle_task_progress, data=d)
+
+    with tempfile.TemporaryDirectory(dir=topbuilddir, prefix='config-tmp-') as tmpdirname:
+        config_path = obtain_config(upstream_config, tmpdirname, args, d)
+        update_build_config(config_path, confdir, topbuilddir, layerdir, d)
+
+    bb.event.remove("bb.build.TaskProgress", None)
+
+def get_diff(file1, file2):
+    try:
+        bb.process.run('diff -uNr {} {}'.format(file1, file2))
+    except bb.process.ExecutionError as e:
+        if e.exitcode == 1:
+            return e.stdout
+        else:
+            raise e
+    return None
+
+def are_layers_changed(layers, layerdir, d):
+    changed = False
+    for r_name in layers:
+        r_data = layers[r_name]
+        repodir = r_data["path"]
+
+        r_remote = r_data['git-remote']
+        rev = r_remote['rev']
+        remotes = r_remote['remotes']
+
+        for remote in remotes:
+            type,host,path,user,pswd,params = bb.fetch.decodeurl(remotes[remote]["uri"])
+            fetchuri = bb.fetch.encodeurl(('git',host,path,user,pswd,params))
+            fetcher = bb.fetch.FetchData("{};protocol={};rev={};nobranch=1;destsuffix={}".format(fetchuri,type,rev,repodir), d)
+            upstream_revision = fetcher.method.latest_revision(fetcher, d, 'default')
+            rev_parse_result = bb.process.run('git -C {} rev-parse HEAD'.format(os.path.join(layerdir, repodir)))
+            local_revision = rev_parse_result[0].strip()
+            if upstream_revision != local_revision:
+                changed = True
+                print('Layer repository {} checked out into {} updated revision {} from {} to {}'.format(remotes[remote]["uri"], os.path.join(layerdir, repodir), rev, local_revision, upstream_revision))
+
+    return changed
+
+def build_status(args, d, update=False):
+    topbuilddir = args.build_dir
+
+    confdir = os.path.join(topbuilddir, "config")
+    layerdir = os.path.join(topbuilddir, "layers")
+
+    upstream_config = json.load(open(os.path.join(topbuilddir, "config-upstream.json")))
+
+    with tempfile.TemporaryDirectory(dir=topbuilddir, prefix='config-tmp-') as tmpdirname:
+        current_config_path = obtain_config(upstream_config, tmpdirname, args, d)
+
+        build_config_path = os.path.join(confdir, os.path.basename(current_config_path))
+        config_diff = get_diff(build_config_path, current_config_path)
+        if config_diff:
+            print('Top level configuration in {} has changed:\n{}'.format(topbuilddir, config_diff))
+            if update:
+                update_build_config(current_config_path, confdir, topbuilddir, layerdir, d)
+            return
+
+    if are_layers_changed(json.load(open(build_config_path))["sources"], layerdir, d):
+        if update:
+            update_build_config(build_config_path, confdir, topbuilddir, layerdir, d, update_layers_only=True)
+        return
+
+    print("Configuration in {} has not changed.".format(topbuilddir))
+
+def build_update(args, d):
+    build_status(args, d, update=True)
+
+def do_fetch(fetcher, dir):
+    # git fetcher simply dumps git output to stdout; in bitbake context that is redirected to temp/log.do_fetch
+    # and we need to set up smth similar here
+    fetchlogdir = os.path.join(dir, 'logs')
+    os.makedirs(fetchlogdir, exist_ok=True)
+    fetchlog = os.path.join(fetchlogdir, 'fetch_log.{}'.format(datetime.datetime.now().strftime("%Y%m%d%H%M%S")))
+    with open(fetchlog, 'a') as f:
+        oldstdout = sys.stdout
+        sys.stdout = f
+        fetcher.download()
+        fetcher.unpack(dir)
+        sys.stdout = oldstdout
+
+def update_registry(registry, cachedir, d):
+    registrydir = 'configurations'
+    full_registrydir = os.path.join(cachedir, registrydir)
+    print("Fetching configuration repository {} into {}".format(registry, full_registrydir))
+    fetcher = bb.fetch.Fetch(["{};destsuffix={}".format(registry, registrydir)], d)
+    do_fetch(fetcher, cachedir)
+    return full_registrydir
+
+def list_registry(registry_path):
+    print("\nAvailable configurations:")
+    for root, dirs, files in os.walk(registry_path):
+        for f in files:
+            if f.endswith('.conf.json'):
+                config_name = get_config_name(f)
+                config_desc = json.load(open(os.path.join(root, f)))["description"]
+                print("{}\t{}".format(config_name, config_desc))
+
+def list_configs(args, d):
+    registry_path = update_registry(args.registry, args.cache_dir, d)
+    list_registry(registry_path)
+
+def default_tool_config_path():
+    return os.environ.get('BITBAKE_SETUP_CONFIG') or os.path.join(os.path.expanduser('~'), '.bitbake-setup', 'config')
+
+def write_tool_config(force_overwrite):
+    config_path = default_tool_config_path()
+    if not os.path.exists(config_path) or force_overwrite:
+        config = configparser.ConfigParser()
+        config['default'] = {'registry':'git://github.com/kanavin/bitbake-setup-configurations.git;protocol=https;branch=main;rev=main',
+                             'cache-dir':os.path.join(os.path.expanduser('~'), '.bitbake-setup'),
+                             'build-dir-prefix':os.path.join(os.path.expanduser('~'), 'builds')}
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, 'w') as configfile:
+            config.write(configfile)
+
+def load_tool_config():
+    # This creates a new config file if it does not yet exist
+    write_tool_config(force_overwrite=False)
+
+    config_path = default_tool_config_path()
+    config = configparser.ConfigParser()
+    print('Default parameter values are in {} - adjust as needed.\n'.format(config_path))
+    config.read([config_path])
+    return config
+
+def get_build_dir():
+    bbpath = os.environ.get('BBPATH')
+    if bbpath:
+        build_dir = os.path.dirname(bbpath.split(':')[0])
+        if os.path.exists(os.path.join(build_dir,'config-upstream.json')):
+            return build_dir
+    return None
+
+def main():
+    config = load_tool_config()
+
+    parser = argparse.ArgumentParser(
+        description="BitBake setup utility",
+        epilog="Use %(prog)s <subcommand> --help to get help on a specific command"
+        )
+    parser.add_argument('-d', '--debug', help='Enable debug output', action='store_true')
+    parser.add_argument('-q', '--quiet', help='Print only errors', action='store_true')
+    parser.add_argument('--color', choices=['auto', 'always', 'never'], default='auto', help='Colorize output (where %(metavar)s is %(choices)s)', metavar='COLOR')
+    parser.add_argument('--registry', default=config['default']['registry'], help='Git repository with configuration files (in bitbake SRC_URI format), default is %(default)s')
+    parser.add_argument('--cache-dir', default=config['default']['cache-dir'], help='Directory where downloaded configurations and layers are cached for reproducibility and offline builds, default is %(default)s')
+    parser.add_argument('--no-network', action='store_true', help='Do not check whether configuration repositories and layer repositories have been updated; use only the local cache.')
+
+    subparsers = parser.add_subparsers()
+
+    parser_init = subparsers.add_parser('init', help='Initialize a build from a configuration')
+    parser_init.add_argument('config', help="path/URL/id to a configuration file, use 'list' command to get available ids")
+    parser_init.add_argument('--build-dir-prefix', help="Directory prefix under which the build directory should be created and initialized, default is %(default)s", default=config['default']['build-dir-prefix'])
+    parser_init.set_defaults(func=init_config)
+
+    build_dir = get_build_dir()
+
+    parser_status = subparsers.add_parser('status', help='Check if the build needs to be synchronized with configuration')
+    if build_dir:
+        parser_status.add_argument('--build-dir', default=build_dir, help="Path to the build, default is %(default)s via BBPATH")
+    else:
+        parser_status.add_argument('--build-dir', required=True, help="Path to the build")
+    parser_status.set_defaults(func=build_status)
+
+    parser_update = subparsers.add_parser('update', help='Update a build to be in sync with configuration')
+    if build_dir:
+        parser_update.add_argument('--build-dir', default=build_dir, help="Path to the build, default is %(default)s via BBPATH")
+    else:
+        parser_update.add_argument('--build-dir', required=True, help="Path to the build")
+    parser_update.set_defaults(func=build_update)
+
+    parser_list = subparsers.add_parser('list', help='List available configurations')
+    parser_list.set_defaults(func=list_configs)
+
+    args = parser.parse_args()
+
+    logging.basicConfig(stream=sys.stdout)
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    elif args.quiet:
+        logger.setLevel(logging.ERROR)
+
+    # Need to re-run logger_create with color argument
+    # (will be the same logger since it has the same name)
+    bb.msg.logger_create('bitbake-setup', output=sys.stdout,
+                         color=args.color,
+                         level=logger.getEffectiveLevel())
+
+    d = init_bb_cache(args)
+    if 'func' in args:
+        args.func(args, d)
+    else:
+        from argparse import Namespace
+        parser.print_help()
+
+main()
